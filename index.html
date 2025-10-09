@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Screen Cast to Android - Secure Connection</title>
+    <link href="style.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <h1>🎥 Screen Cast to Android</h1>
+        
+        <div class="step-indicator">
+            <div class="step-dot active" id="dot1"></div>
+            <div class="step-dot" id="dot2"></div>
+            <div class="step-dot" id="dot3"></div>
+        </div>
+        
+        <div id="status" class="status disconnected">Not Connected</div>
+        
+        <!-- Step 1: Server Connection -->
+        <div class="step active" id="step1">
+            <div class="input-group">
+                <label for="serverUrl">Android Device IP Address:</label>
+                <input type="text" id="serverUrl" placeholder="192.168.1.100:8080" />
+            </div>
+            <button class="btn-primary" id="connectBtn">Connect to Device</button>
+            <div class="info">
+                <p>📱 Enter the IP address shown on your Android device</p>
+                <p>🔍 Example: 192.168.1.100:8080</p>
+            </div>
+        </div>
+        
+        <!-- Step 2: PIN Authentication -->
+        <div class="step" id="step2">
+            <div class="input-group">
+                <label for="pinInput">Enter 6-Digit PIN:</label>
+                <input type="text" id="pinInput" class="pin-input" maxlength="6" placeholder="123456" />
+            </div>
+            <button class="btn-primary" id="authenticateBtn">Authenticate</button>
+            <div class="info">
+                <p>🔐 Enter the 6-digit PIN shown on Android device</p>
+                <p>⚠️ PIN is case-sensitive</p>
+            </div>
+        </div>
+        
+        <!-- Step 3: Screen Casting -->
+        <div class="step" id="step3">
+            <button class="btn-primary" id="startBtn">Start Screen Casting</button>
+            <button class="btn-danger" id="stopBtn" disabled>Stop Casting</button>
+            
+            <div class="preview">
+                <video id="localVideo" autoplay muted playsinline></video>
+            </div>
+            
+            <div class="info">
+                <p>🎥 Click "Start Screen Casting" to share your screen</p>
+                <p>🔊 <strong>Important:</strong> Check "Share audio" or "Share tab audio" in the browser dialog to include system audio</p>
+                <p>💡 For system-wide audio, select "Entire Screen" and enable audio sharing</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js">
+
+    </script>
+</body>
+</html>
