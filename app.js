@@ -5,6 +5,7 @@ let shouldReconnect = false;
 let keepAliveInterval = null;
 let currentStep = 1;
 let isAuthenticated = false;
+let currentPin = null;
 
 const serverUrlInput = document.getElementById('serverUrl');
 const pinInput = document.getElementById('pinInput');
@@ -23,6 +24,47 @@ const config = {
     ]
 };
 
+// ===== PIN RESOLUTION FUNCTIONS =====
+function resolvePin(pin) {
+  if (typeof pin !== 'string') throw new Error('Pin must be a string');
+  const s = pin.trim();
+  if (!/^[0-9A-Fa-f]{8}$/.test(s) && !/^[0-9A-Fa-f]{10}$/.test(s)) {
+    throw new Error('Invalid pin format — expected 8 or 10 hex characters.');
+  }
+
+  if (s.length === 8) {
+    // simple case: 8 hex chars -> direct IP
+    const intVal = parseInt(s, 16) >>> 0;
+    const a = (intVal >>> 24) & 0xFF;
+    const b = (intVal >>> 16) & 0xFF;
+    const c = (intVal >>> 8) & 0xFF;
+    const d = intVal & 0xFF;
+    validateOctets([a, b, c, d]);
+    return `${a}.${b}.${c}.${d}`;
+  } else {
+    // 10 hex chars: last 2 hex are salt
+    const dataHex = s.slice(0, 8);
+    const saltHex = s.slice(8);
+    const intVal = parseInt(dataHex, 16) >>> 0;
+    const salt = parseInt(saltHex, 16) & 0xFF;
+    const a = (((intVal >>> 24) & 0xFF) ^ salt) & 0xFF;
+    const b = (((intVal >>> 16) & 0xFF) ^ salt) & 0xFF;
+    const c = (((intVal >>> 8) & 0xFF) ^ salt) & 0xFF;
+    const d = ((intVal & 0xFF) ^ salt) & 0xFF;
+    validateOctets([a, b, c, d]);
+    return `${a}.${b}.${c}.${d}`;
+  }
+}
+
+function validateOctets(arr) {
+  if (!Array.isArray(arr) || arr.length !== 4) throw new Error('Invalid octets');
+  for (const x of arr) {
+    if (!Number.isInteger(x) || x < 0 || x > 255) {
+      throw new Error('Decoded octet out of range: ' + x);
+    }
+  }
+}
+
 function updateStatus(text, state) {
     status.textContent = text;
     status.className = 'status ' + state;
@@ -39,101 +81,110 @@ function showStep(step) {
     currentStep = step;
 }
 
-function connectWebSocket() {
-    const serverUrl = serverUrlInput.value.trim();
-    if (!serverUrl) {
-        updateStatus('Please enter server address', 'disconnected');
+// Automated connection and authentication with hex pin
+function connectWithPin() {
+    const hexPin = pinInput.value.trim();
+    if (!hexPin) {
+        updateStatus('Please enter hex PIN (8 or 10 characters)', 'disconnected');
         return;
     }
 
-    const url = new URL('http://' + serverUrl);
-    const wsUrl = 'ws://' + url.host + '/ws';
-    
-    updateStatus('Connecting to Android...', 'connecting');
-    ws = new WebSocket(wsUrl);
-
-    ws.onopen = () => {
-        console.log('WebSocket connected');
-        updateStatus('Connected - Authentication required', 'connected');
-        shouldReconnect = true;
+    try {
+        // Resolve IP from hex pin
+        const ip = resolvePin(hexPin);
+        const serverUrl = `${ip}:8080`;
         
-        // Move to PIN step
-        showStep(2);
-        setTimeout(() => pinInput.focus(), 300);
+        console.log('Resolved IP from pin:', ip);
+        updateStatus(`Resolved IP: ${ip} - Connecting...`, 'connecting');
         
-        // Send keep-alive ping every 3 seconds
-        if (keepAliveInterval) clearInterval(keepAliveInterval);
-        keepAliveInterval = setInterval(() => {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'ping' }));
-            }
-        }, 3000);
-    };
+        // Store pin for authentication
+        currentPin = hexPin;
+        
+        // Connect to WebSocket
+        const wsUrl = `ws://${serverUrl}/ws`;
+        ws = new WebSocket(wsUrl);
 
-    ws.onmessage = async (event) => {
-        const message = JSON.parse(event.data);
-        console.log('Received:', message);
-
-        if (message.type === 'auth_success') {
-            isAuthenticated = true;
-            updateStatus('Authenticated - Ready to cast', 'authenticated');
-            showStep(3);
-        } else if (message.type === 'auth_failed') {
-            updateStatus('Authentication Failed: ' + (message.message || 'Invalid PIN'), 'disconnected');
-            pinInput.value = '';
-            pinInput.focus();
-        } else if (message.type === 'error') {
-            console.error('Server error:', message.message);
-        } else if (message.type === 'answer' && isAuthenticated) {
-            await pc.setRemoteDescription(new RTCSessionDescription(message));
-        } else if (message.type === 'candidate' && isAuthenticated) {
-            await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
-        }
-    };
-
-    ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        updateStatus('Connection error - Check IP address', 'disconnected');
-    };
-
-    ws.onclose = () => {
-        console.log('WebSocket closed');
-        if (keepAliveInterval) {
-            clearInterval(keepAliveInterval);
-            keepAliveInterval = null;
-        }
-        updateStatus('Disconnected', 'disconnected');
-        isAuthenticated = false;
-        if (shouldReconnect && currentStep > 1) {
-            setTimeout(() => {
-                if (shouldReconnect && (!ws || ws.readyState === WebSocket.CLOSED)) {
-                    console.log('Attempting to reconnect...');
-                    connectWebSocket();
+        ws.onopen = () => {
+            console.log('WebSocket connected to', serverUrl);
+            updateStatus('Connected - Authenticating...', 'connecting');
+            shouldReconnect = true;
+            
+            // Send keep-alive ping every 3 seconds
+            if (keepAliveInterval) clearInterval(keepAliveInterval);
+            keepAliveInterval = setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'ping' }));
                 }
-            }, 2000);
-        }
-    };
+            }, 3000);
+            
+            // Automatically authenticate with the pin
+            setTimeout(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'auth',
+                        pin: currentPin
+                    }));
+                }
+            }, 100);
+        };
+
+        ws.onmessage = async (event) => {
+            const message = JSON.parse(event.data);
+            console.log('Received:', message);
+
+            if (message.type === 'auth_success') {
+                isAuthenticated = true;
+                updateStatus('Authenticated - Ready to cast', 'authenticated');
+                showStep(3);
+            } else if (message.type === 'auth_failed') {
+                updateStatus('Authentication Failed: ' + (message.message || 'Invalid PIN'), 'disconnected');
+                pinInput.value = '';
+                pinInput.focus();
+                showStep(1);
+            } else if (message.type === 'error') {
+                console.error('Server error:', message.message);
+                updateStatus('Server error: ' + message.message, 'disconnected');
+            } else if (message.type === 'answer' && isAuthenticated) {
+                await pc.setRemoteDescription(new RTCSessionDescription(message));
+            } else if (message.type === 'candidate' && isAuthenticated) {
+                await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+            }
+        };
+
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            updateStatus('Connection error - Check PIN or network', 'disconnected');
+        };
+
+        ws.onclose = () => {
+            console.log('WebSocket closed');
+            if (keepAliveInterval) {
+                clearInterval(keepAliveInterval);
+                keepAliveInterval = null;
+            }
+            updateStatus('Disconnected', 'disconnected');
+            isAuthenticated = false;
+            if (shouldReconnect && currentStep > 1) {
+                setTimeout(() => {
+                    if (shouldReconnect && (!ws || ws.readyState === WebSocket.CLOSED)) {
+                        console.log('Attempting to reconnect...');
+                        connectWithPin();
+                    }
+                }, 2000);
+            }
+        };
+    } catch (error) {
+        console.error('Pin resolution error:', error);
+        updateStatus('Invalid PIN: ' + error.message, 'disconnected');
+        pinInput.value = '';
+        pinInput.focus();
+    }
 }
 
+// Legacy function - no longer needed as authentication is automated
 function authenticateWithPIN() {
-    const pin = pinInput.value.replace(/[^0-9]/g, '');
-    
-    if (pin.length !== 6) {
-        updateStatus('PIN must be 6 digits', 'disconnected');
-        return;
-    }
-
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-        updateStatus('Not connected. Please reconnect.', 'disconnected');
-        showStep(1);
-        return;
-    }
-
-    updateStatus('Authenticating...', 'connecting');
-    ws.send(JSON.stringify({
-        type: 'auth',
-        pin: pin
-    }));
+    // Authentication is now handled automatically in connectWithPin()
+    console.log('Authentication is handled automatically');
 }
 
 async function startCasting() {
@@ -267,23 +318,23 @@ window.addEventListener('beforeunload', () => {
 });
 
 // Event Listeners
-connectBtn.addEventListener('click', connectWebSocket);
+connectBtn.addEventListener('click', connectWithPin);
 
-authenticateBtn.addEventListener('click', authenticateWithPIN);
+authenticateBtn.addEventListener('click', connectWithPin);
 
 pinInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
-        authenticateWithPIN();
+        connectWithPin();
     }
-    // Only allow numbers
-    if (!/[0-9]/.test(e.key)) {
+    // Allow hex characters (0-9, A-F, a-f)
+    if (!/[0-9A-Fa-f]/.test(e.key)) {
         e.preventDefault();
     }
 });
 
 serverUrlInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
-        connectWebSocket();
+        connectWithPin();
     }
 });
 
